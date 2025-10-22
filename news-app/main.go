@@ -2,13 +2,17 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
+	"github.com/sirupsen/logrus"
 	"io"
-	"net/url"
-
 	"net/http"
+	"net/url"
+	"os"
+	"time"
 )
+
+// ---------- Structs ----------
 
 type newsItem struct {
 	ArticleID   string   `json:"article_id"`
@@ -29,31 +33,10 @@ type newsItem struct {
 }
 
 type newsDataIoResponse struct {
-	Status       string `json:"status"`
-	TotalResults int    `json:"totalResults"`
-	NextPage     string `json:"nextPage"`
-	Results      []struct {
-		ArticleID   string   `json:"article_id"`
-		Title       string   `json:"title"`
-		Link        string   `json:"link"`
-		Creator     []string `json:"creator"`
-		Description string   `json:"description"`
-		PubDate     string   `json:"pubDate"`
-		ImageURL    string   `json:"image_url"`
-		VideoURL    string   `json:"video_url"`
-		SourceID    string   `json:"source_id"`
-		SourceName  string   `json:"source_name"`
-		SourceURL   string   `json:"source_url"`
-		SourceIcon  string   `json:"source_icon"`
-		Language    string   `json:"language"`
-		Country     []string `json:"country"`
-		Category    []string `json:"category"`
-	} `json:"results"`
-}
-
-type newsRequest struct {
-	Query    string `json:"query"`
-	Language string `json:"language"`
+	Status       string     `json:"status"`
+	TotalResults int        `json:"totalResults"`
+	NextPage     string     `json:"nextPage"`
+	Results      []newsItem `json:"results"`
 }
 
 type newsResponse struct {
@@ -63,14 +46,50 @@ type newsResponse struct {
 	Results      []newsItem `json:"results"`
 }
 
-func main() {
-	router := gin.Default()
-	router.GET("/news", getNewsItemsUsingAPI)
+// ---------- Main ----------
 
-	router.Run("localhost:8080")
+func main() {
+	// Load environment variables
+	_ = godotenv.Load()
+
+	// Logger setup
+	logger := logrus.New()
+	logger.SetFormatter(&logrus.JSONFormatter{
+		TimestampFormat: time.RFC3339,
+	})
+	logger.SetOutput(os.Stdout)
+	logger.SetLevel(logrus.InfoLevel)
+
+	router := gin.Default()
+
+	// Cors
+	router.Use(func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		c.Next()
+	})
+
+	// Routes
+	router.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	router.GET("/news", func(c *gin.Context) {
+		getNewsItemsUsingAPI(c, logger)
+	})
+
+	// Port configuration
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	logger.WithField("port", port).Info("🚀 Starting server")
+	if err := router.Run("0.0.0.0:" + port); err != nil {
+		logger.WithError(err).Fatal("Failed to start server")
+	}
 }
 
-func getNewsItemsUsingAPI(c *gin.Context) {
+func getNewsItemsUsingAPI(c *gin.Context, logger *logrus.Logger) {
 	query := c.Query("query")
 	language := c.DefaultQuery("language", "en")
 	nextPage := c.Query("page")
@@ -78,14 +97,21 @@ func getNewsItemsUsingAPI(c *gin.Context) {
 	category := c.Query("category")
 
 	if query == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "query is required"})
+		logger.Warn("Missing 'query' parameter")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "query parameter is required"})
+		return
+	}
+
+	apiKey := os.Getenv("NEWS_API_KEY")
+	if apiKey == "" {
+		logger.Error("NEWS_API_KEY not set in environment")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "API key not configured"})
 		return
 	}
 
 	baseURL := "https://newsdata.io/api/1/latest"
-
 	params := url.Values{}
-	params.Add("apikey", "pub_62f82742c94b4551b14f1d6e060851ed")
+	params.Add("apikey", apiKey)
 	params.Add("q", query)
 	params.Add("language", language)
 	if nextPage != "" {
@@ -98,55 +124,47 @@ func getNewsItemsUsingAPI(c *gin.Context) {
 		params.Add("category", category)
 	}
 
-	fullURL := fmt.Sprintf("%s?%s", baseURL, params.Encode())
-	fmt.Println("Calling:", fullURL)
+	fullURL := baseURL + "?" + params.Encode()
+	logger.WithFields(logrus.Fields{
+		"query":    query,
+		"language": language,
+		"country":  country,
+		"category": category,
+	}).Info("📡 Fetching news")
 
 	resp, err := http.Get(fullURL)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		logger.WithError(err).Error("Failed to call NewsData.io API")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to call NewsData.io API"})
 		return
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		logger.WithError(err).Error("Failed to read API response")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read API response"})
 		return
 	}
 
-	// Unmarshal NewsData.io response
 	var ndResp newsDataIoResponse
 	if err := json.Unmarshal(body, &ndResp); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		logger.WithError(err).Error("Failed to parse JSON from API")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse API response"})
 		return
 	}
 
-	// Map to your struct
-	var myNewsResp newsResponse
-	myNewsResp.Status = ndResp.Status
-	myNewsResp.TotalResults = ndResp.TotalResults
-	myNewsResp.NextPage = ndResp.NextPage
-
-	for _, r := range ndResp.Results {
-		item := newsItem{
-			ArticleID:   r.ArticleID,
-			Title:       r.Title,
-			Link:        r.Link,
-			Creator:     r.Creator,
-			Description: r.Description,
-			PubDate:     r.PubDate,
-			ImageURL:    r.ImageURL,
-			VideoURL:    r.VideoURL,
-			SourceID:    r.SourceID,
-			SourceName:  r.SourceName,
-			SourceURL:   r.SourceURL,
-			SourceIcon:  r.SourceIcon,
-			Language:    r.Language,
-			Country:     r.Country,
-			Category:    r.Category,
-		}
-		myNewsResp.Results = append(myNewsResp.Results, item)
+	myNewsResp := newsResponse{
+		Status:       ndResp.Status,
+		TotalResults: ndResp.TotalResults,
+		NextPage:     ndResp.NextPage,
+		Results:      ndResp.Results,
 	}
+
+	logger.WithFields(logrus.Fields{
+		"results_count": len(myNewsResp.Results),
+		"next_page":     myNewsResp.NextPage,
+	}).Info("✅ Returning news results")
 
 	c.JSON(http.StatusOK, myNewsResp)
 }
