@@ -37,6 +37,20 @@ function App() {
     };
   }, []);
 
+  // Load default news on component mount
+  React.useEffect(() => {
+    const loadDefaultNews = async () => {
+      const defaultFilters: NewsFilters = {
+        query: 'latest',
+        language: 'en'
+      };
+      setCurrentFilters(defaultFilters);
+      await fetchNews(defaultFilters);
+    };
+
+    loadDefaultNews();
+  }, [fetchNews]);
+
   const handleSearch = useCallback(async (filters: NewsFilters) => {
     setCurrentFilters(filters);
     clearNews();
@@ -121,24 +135,16 @@ function App() {
                 ? `Found ${totalResults.toLocaleString()} articles`
                 : 'No articles found'
               }
-              {currentFilters && (
+              {currentFilters && currentFilters.query !== 'latest' && (
                 <span className="ml-2">
                   for "<span className="font-medium">{currentFilters.query}</span>"
                 </span>
               )}
-            </p>
-          </div>
-        )}
-
-        {/* Welcome State */}
-        {!hasSearched && !loading && (
-          <div className="text-center py-16">
-            <Newspaper className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-            <h2 className="text-2xl font-semibold text-gray-900 mb-2">
-              Welcome to NewsHub
-            </h2>
-            <p className="text-gray-600 max-w-md mx-auto">
-              Search for the latest news from around the world. Use filters to narrow down your search by language, country, or category.
+              {currentFilters && currentFilters.query === 'latest' && (
+                <span className="ml-2 text-blue-600 font-medium">
+                  - Latest News
+                </span>
+              )}
             </p>
           </div>
         )}
